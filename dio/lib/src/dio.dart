@@ -364,8 +364,8 @@ abstract class DioMixin implements Dio {
     Options options,
     CancelToken cancelToken,
     ProgressCallback onReceiveProgress,
-  }) {
-    return request<T>(
+  }) async {
+    return await request<T>(
       path,
       queryParameters: queryParameters,
       options: checkOptions('GET', options),
@@ -381,8 +381,8 @@ abstract class DioMixin implements Dio {
     Options options,
     CancelToken cancelToken,
     ProgressCallback onReceiveProgress,
-  }) {
-    return requestUri<T>(
+  }) async {
+    return await requestUri<T>(
       uri,
       options: checkOptions('GET', options),
       onReceiveProgress: onReceiveProgress,
@@ -400,8 +400,8 @@ abstract class DioMixin implements Dio {
     CancelToken cancelToken,
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
-  }) {
-    return request<T>(
+  }) async {
+    return await request<T>(
       path,
       data: data,
       options: checkOptions('POST', options),
@@ -421,8 +421,8 @@ abstract class DioMixin implements Dio {
     CancelToken cancelToken,
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
-  }) {
-    return requestUri<T>(
+  }) async {
+    return await requestUri<T>(
       uri,
       data: data,
       options: checkOptions('POST', options),
@@ -442,8 +442,8 @@ abstract class DioMixin implements Dio {
     CancelToken cancelToken,
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
-  }) {
-    return request<T>(
+  }) async {
+    return await request<T>(
       path,
       data: data,
       queryParameters: queryParameters,
@@ -463,8 +463,8 @@ abstract class DioMixin implements Dio {
     CancelToken cancelToken,
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
-  }) {
-    return requestUri<T>(
+  }) async {
+    return await requestUri<T>(
       uri,
       data: data,
       options: checkOptions('PUT', options),
@@ -482,8 +482,8 @@ abstract class DioMixin implements Dio {
     Map<String, dynamic> queryParameters,
     Options options,
     CancelToken cancelToken,
-  }) {
-    return request<T>(
+  }) async {
+    return await request<T>(
       path,
       data: data,
       queryParameters: queryParameters,
@@ -499,8 +499,8 @@ abstract class DioMixin implements Dio {
     data,
     Options options,
     CancelToken cancelToken,
-  }) {
-    return requestUri<T>(
+  }) async {
+    return await requestUri<T>(
       uri,
       data: data,
       options: checkOptions('HEAD', options),
@@ -516,8 +516,8 @@ abstract class DioMixin implements Dio {
     Map<String, dynamic> queryParameters,
     Options options,
     CancelToken cancelToken,
-  }) {
-    return request<T>(
+  }) async {
+    return await request<T>(
       path,
       data: data,
       queryParameters: queryParameters,
@@ -533,8 +533,8 @@ abstract class DioMixin implements Dio {
     data,
     Options options,
     CancelToken cancelToken,
-  }) {
-    return requestUri<T>(
+  }) async {
+    return await requestUri<T>(
       uri,
       data: data,
       options: checkOptions('DELETE', options),
@@ -552,8 +552,8 @@ abstract class DioMixin implements Dio {
     CancelToken cancelToken,
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
-  }) {
-    return request<T>(
+  }) async {
+    return await request<T>(
       path,
       data: data,
       queryParameters: queryParameters,
@@ -573,8 +573,8 @@ abstract class DioMixin implements Dio {
     CancelToken cancelToken,
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
-  }) {
-    return requestUri<T>(
+  }) async {
+    return await requestUri<T>(
       uri,
       data: data,
       options: checkOptions('PATCH', options),
@@ -761,7 +761,7 @@ abstract class DioMixin implements Dio {
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
   }) async {
-    return _request<T>(
+    return await _request<T>(
       path,
       data: data,
       queryParameters: queryParameters,
@@ -785,8 +785,8 @@ abstract class DioMixin implements Dio {
     Options options,
     ProgressCallback onSendProgress,
     ProgressCallback onReceiveProgress,
-  }) {
-    return request(
+  }) async {
+    return await request(
       uri.toString(),
       data: data,
       cancelToken: cancelToken,
@@ -875,6 +875,20 @@ abstract class DioMixin implements Dio {
       };
     }
 
+    Future interceptError(Iterator interceptorsIterator, dynamic err) async {
+      if (interceptorsIterator.moveNext()) {
+        Interceptor interceptor = interceptorsIterator.current;
+        try {
+          var newErr = await _errorInterceptorWrapper(interceptor.onError)(err);
+          return await interceptError(interceptorsIterator, newErr);
+        } catch (e) {
+          return await interceptError(interceptorsIterator, e);
+        }
+      } else {
+        return err;
+      }
+    }
+
     // Build a request flow in which the processors(interceptors)
     // execute in FIFO order.
 
@@ -895,19 +909,21 @@ abstract class DioMixin implements Dio {
     });
 
     // Add error handlers to request flow
-    interceptors.forEach((Interceptor interceptor) {
-      future = future.catchError(_errorInterceptorWrapper(interceptor.onError));
-    });
+    // interceptors.forEach((Interceptor interceptor) {
+    //   future = future.catchError(_errorInterceptorWrapper(interceptor.onError));
+    // });
 
     // Normalize errors, we convert error to the DioError
-    return future.then<Response<T>>((data) {
+    try {
+      Response data = await future;
       return assureResponse<T>(data);
-    }).catchError((err) {
-      if (err == null || _isErrorOrException(err)) {
-        throw assureDioError(err, requestOptions);
+    } catch (err) {
+      var interceptedError = await interceptError(interceptors.iterator, err);
+      if (interceptedError == null || _isErrorOrException(interceptedError)) {
+        throw assureDioError(interceptedError, requestOptions);
       }
-      return assureResponse<T>(err, requestOptions);
-    });
+      return assureResponse<T>(interceptedError, requestOptions);
+    }
   }
 
   // Initiate Http requests
@@ -1032,7 +1048,8 @@ abstract class DioMixin implements Dio {
         options.headers[Headers.contentLengthHeader] = length.toString();
       }
       var complete = 0;
-      var byteStream = stream.transform<Uint8List>(StreamTransformer.fromHandlers(
+      var byteStream =
+          stream.transform<Uint8List>(StreamTransformer.fromHandlers(
         handleData: (data, sink) {
           if (options.cancelToken != null && options.cancelToken.isCancelled) {
             sink
